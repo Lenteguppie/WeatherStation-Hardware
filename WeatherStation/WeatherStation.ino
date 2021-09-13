@@ -4,6 +4,7 @@
  * Date created: 07/09/2021
  * Last modified: 07/09/2021
  * Github: https://github.com/Lenteguppie/WeatherStation-Hardware
+ * Board: ESP32
  */
 
 
