@@ -6,7 +6,7 @@
  * Github: https://github.com/Lenteguppie/WeatherStation-Hardware
  * Board: ESP32
  */
-
+#include "secrets.h"
 
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -17,15 +17,6 @@
 #define DHTPIN 14
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
-
-
-const char *WIFI_SSID = "YOUR WIFI SSID";
-const char *WIFI_PASSWORD = "WIFI PASSWORD";
-
-const char* mqttServer = "MQTT BROKER"; // The IP of your MQTT broker
-const int mqttPort = 8282; //Port for MQTT default 1883
-const char* mqttUser = "MQTT username";
-const char* mqttPassword = "MQTT PW";
 
 // Define some variables we need later
 float humidity;
@@ -39,7 +30,7 @@ int moisture_high = 350;
 int moisturePercentage = 0;
 
 // My own numerical system for registering devices.
-String student_number = "0962873";
+String student_number = STUDENT_NUMBER;
 String mqttName = "HomeStation " + String(student_number);
 String stateTopic = "home_station/weather/" + String(student_number) + "/state";
 
@@ -87,7 +78,7 @@ void sendSensorData() {
 void setup() {
   Serial.begin(9600);
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   Serial.println("Connecting to Wi-Fi");
 
@@ -101,14 +92,14 @@ void setup() {
 
   Serial.println("Connected to Wi-Fi");
 
-  client.setServer(mqttServer, mqttPort);
+  client.setServer(MQTT_BROKER, MQTT_PORT);
 
   Serial.println("Connecting to MQTT");
 
   while (!client.connected()) {
     Serial.print(".");
 
-    if (client.connect(mqttName.c_str(), mqttUser, mqttPassword)) {
+    if (client.connect(mqttName.c_str(), MQTT_USER, MQTT_PASSWORD)) {
 
       Serial.println("Connected to MQTT");
 
