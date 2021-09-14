@@ -1,11 +1,11 @@
 /*
- * Author: Sascha Vis
- * Student number: 0962873
- * Date created: 07/09/2021
- * Last modified: 07/09/2021
- * Github: https://github.com/Lenteguppie/WeatherStation-Hardware
- * Board: ESP32
- */
+   Author: Sascha Vis
+   Student number: 0962873
+   Date created: 07/09/2021
+   Last modified: 07/09/2021
+   Github: https://github.com/Lenteguppie/WeatherStation-Hardware
+   Board: ESP32
+*/
 #include "secrets.h"
 
 #include <WiFi.h>
@@ -14,6 +14,11 @@
 #include "DHT.h"
 #include <ArduinoJson.h>
 
+//Deep sleep Constants
+#define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
+
+//DHT11 Constants
 #define DHTPIN 14
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
@@ -77,7 +82,17 @@ void sendSensorData() {
 
 void setup() {
   Serial.begin(9600);
+  delay(500); //Get some time to start up the serial monitor
 
+  /*
+    First we configure the wake up source
+    We set our ESP32 to wake up every 5 seconds
+  */
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
+                 " Seconds");
+
+  //Start the WiFi connection
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   Serial.println("Connecting to Wi-Fi");
@@ -107,6 +122,12 @@ void setup() {
       sendMQTTHumidityDiscoveryMsg();
       sendMQTTMoistureDiscoveryMsg();
 
+      //Start the DHT
+      dht.begin();
+
+      Serial.println("===== Sending Data =====");
+      sendSensorData(); //Get the sensorData and send it over to the MQTT broker
+
     } else {
 
       Serial.println("failed with state ");
@@ -116,10 +137,11 @@ void setup() {
     }
   }
 
-  dht.begin();
-  // Go into deep sleep mode for 60 seconds
-  //  Serial.println("Deep sleep mode for 60 seconds");
-  //  ESP.deepSleep(10e6);
+  //Go into deep sleep...
+  Serial.println("Going to sleep now");
+  Serial.flush();
+  esp_deep_sleep_start();
+  Serial.println("This will never be printed");
 }
 
 void sendMQTTTemperatureDiscoveryMsg() {
@@ -180,12 +202,5 @@ void sendMQTTMoistureDiscoveryMsg() {
 }
 
 void loop() {
-  if (WiFi.status() == WL_CONNECTED) { //Check if the WiFi is connected
-    Serial.println("===== Sending Data =====");
-    sendSensorData(); //Get the sensorData and send it over to the MQTT broker
-  }
-  else {
-    Serial.println("WiFi Disconnected");
-  }
-  delay(10000);
+  //This is not going to be used
 }
