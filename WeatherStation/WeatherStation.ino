@@ -27,6 +27,8 @@ DHT dht(DHTPIN, DHTTYPE);
 float humidity;
 float temperature;
 
+float wind_speed;
+
 int sensorPin = A0;
 int moisture = 0;
 
@@ -55,12 +57,14 @@ void sendSensorData() {
     temperature = 0;
   }
 
+  wind_speed = 0;
+
   // Map moisture sensor values to a percentage value
   moisturePercentage = map(moisture, moisture_low, moisture_high, 0, 100);
 
   DynamicJsonDocument doc(1024);
   char buffer[256];
-
+  doc["windspeed"] = wind_speed;
   doc["humidity"] = humidity;
   doc["temperature"]   = temperature;
   doc["moisture"] = moisturePercentage;
@@ -121,6 +125,7 @@ void setup() {
       sendMQTTTemperatureDiscoveryMsg();
       sendMQTTHumidityDiscoveryMsg();
       sendMQTTMoistureDiscoveryMsg();
+      sendMQTTWindSpeedDiscoveryMsg();
 
       //Start the DHT
       dht.begin();
@@ -195,6 +200,26 @@ void sendMQTTMoistureDiscoveryMsg() {
   doc["stat_t"]   = stateTopic; //The topic the sensor will send the updates to
   doc["frc_upd"] = true; //Force update
   doc["val_tpl"] = "{{ value_json.moisture|default(0) }}"; //Value template. This will define how HASSIO will parse the data.
+
+  size_t n = serializeJson(doc, buffer); //Convert the JSON document to a String
+
+  client.publish(discoveryTopic.c_str(), buffer, n); //Publish the MQTT message to the discovery topic
+}
+
+void sendMQTTWindSpeedDiscoveryMsg() {
+  Serial.println("Sending Wind Speed Discovery MSG");
+  String discoveryTopic = "homeassistant/sensor/homestation_sensor_" + String(student_number) + "/wind_speed/config"; // The topic the sensor will post the entity configuration to.
+
+  //Initialize the JSON Document
+  DynamicJsonDocument doc(1024);
+  char buffer[256];
+
+  doc["name"] = "Homestation " + String(student_number) + " Wind Speed"; //The name of the sensor
+  doc["stat_t"]   = stateTopic; //The topic the sensor will send the updates to
+  doc["dev_cla"] = "speed";
+  doc["unit_of_meas"] = "m/s";
+  doc["frc_upd"] = true; //Force update
+  doc["val_tpl"] = "{{ value_json.windspeed|default(0) }}"; //Value template. This will define how HASSIO will parse the data.
 
   size_t n = serializeJson(doc, buffer); //Convert the JSON document to a String
 
