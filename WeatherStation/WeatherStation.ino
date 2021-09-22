@@ -112,8 +112,10 @@ void setup() {
   Serial.println("Connected to Wi-Fi");
 
   client.setServer(MQTT_BROKER, MQTT_PORT);
-
   Serial.println("Connecting to MQTT");
+  
+  bool resized = client.setBufferSize(512); //resizes the buffer because the discovery payloads can be pretty big
+  Serial.println("resized buffer: " + String(resized));
 
   while (!client.connected()) {
     Serial.print(".");
@@ -123,9 +125,13 @@ void setup() {
       Serial.println("Connected to MQTT");
 
       sendMQTTTemperatureDiscoveryMsg();
+      delay(500);
       sendMQTTHumidityDiscoveryMsg();
+      delay(500);
       sendMQTTMoistureDiscoveryMsg();
+      delay(500);
       sendMQTTWindSpeedDiscoveryMsg();
+      delay(500);
 
       //Start the DHT
       dht.begin();
@@ -151,12 +157,12 @@ void setup() {
 
 void sendMQTTTemperatureDiscoveryMsg() {
   Serial.println("Sending Temperature Discovery MSG");
-  String discoveryTopic = "homeassistant/sensor/HomeStation_sensor_" + String(student_number) + "/temp/config";
+  String discoveryTopic = "homeassistant/sensor/homestation_sensor_" + String(student_number) + "/temperature/config";
 
   DynamicJsonDocument doc(1024);
   char buffer[256];
 
-  doc["name"] = "Plant" + String(student_number) + " Temperature";
+  doc["name"] = "Homestation" + String(student_number) + " Temperature";
   doc["stat_t"]   = stateTopic;
   doc["unit_of_meas"] = "°C";
   doc["dev_cla"] = "temperature";
@@ -165,7 +171,8 @@ void sendMQTTTemperatureDiscoveryMsg() {
 
   size_t n = serializeJson(doc, buffer);
 
-  client.publish(discoveryTopic.c_str(), buffer, n);
+  bool sent = client.publish(discoveryTopic.c_str(), buffer, n);
+  Serial.println("Send to topic: " + String(sent));
 
 }
 
@@ -176,7 +183,7 @@ void sendMQTTHumidityDiscoveryMsg() {
   DynamicJsonDocument doc(1024);
   char buffer[256];
 
-  doc["name"] = "Plant " + String(student_number) + " Humidity";
+  doc["name"] = "Homestation " + String(student_number) + " Humidity";
   doc["stat_t"]   = stateTopic;
   doc["unit_of_meas"] = "%";
   doc["dev_cla"] = "humidity";
@@ -185,7 +192,8 @@ void sendMQTTHumidityDiscoveryMsg() {
 
   size_t n = serializeJson(doc, buffer);
 
-  client.publish(discoveryTopic.c_str(), buffer, n);
+  bool sent = client.publish(discoveryTopic.c_str(), buffer, n);
+  Serial.println("Send to topic: " + String(sent));
 }
 
 void sendMQTTMoistureDiscoveryMsg() {
@@ -202,8 +210,9 @@ void sendMQTTMoistureDiscoveryMsg() {
   doc["val_tpl"] = "{{ value_json.moisture|default(0) }}"; //Value template. This will define how HASSIO will parse the data.
 
   size_t n = serializeJson(doc, buffer); //Convert the JSON document to a String
-
-  client.publish(discoveryTopic.c_str(), buffer, n); //Publish the MQTT message to the discovery topic
+  
+  bool sent = client.publish(discoveryTopic.c_str(), buffer, n); //Publish the MQTT message to the discovery topic
+  Serial.println("Send to topic: " + String(sent));
 }
 
 void sendMQTTWindSpeedDiscoveryMsg() {
@@ -223,7 +232,8 @@ void sendMQTTWindSpeedDiscoveryMsg() {
 
   size_t n = serializeJson(doc, buffer); //Convert the JSON document to a String
 
-  client.publish(discoveryTopic.c_str(), buffer, n); //Publish the MQTT message to the discovery topic
+  bool sent = client.publish(discoveryTopic.c_str(), buffer, n); //Publish the MQTT message to the discovery topic
+  Serial.println("Send to topic: " + String(sent));
 }
 
 void loop() {
