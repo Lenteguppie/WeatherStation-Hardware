@@ -1,4 +1,4 @@
-#include "Secret.h"
+#include "secrets.h"
 
 //Include the required libraries
 #include <WiFi.h>
@@ -38,7 +38,7 @@ void setup() {
     Serial.println("Starting...");
 
     // Unique ID must be set!
-    byte mac[WL_MAC_ADDR_LENGTH];
+    byte mac[6];
     WiFi.macAddress(mac);
     device.setUniqueId(mac, sizeof(mac));
 
