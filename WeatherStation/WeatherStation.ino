@@ -1,9 +1,11 @@
 #include "secrets.h"
 
 //Include the required libraries
-#include <WiFi.h>
+#include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include <ArduinoHA.h>
 #include "DHT.h"
+
+WiFiManager wm;
 
 //Define DHT sensor pin and type
 #define DHTPIN 4
@@ -45,6 +47,7 @@ HASensor sensorTemperature("Temperature");
 HASensor sensorHumidity("Humidity");
 HASensor sensorRain("RegenMeter");
 HASensor sensorWindSPD("Wind_speed");
+HASensor sensorAnemometerPulses("Anemometer_pulses");
 HASensor sensorSignalstrength("Signal_strength");
 
 //Interrupt to increment the anemometer counter
@@ -53,21 +56,41 @@ ICACHE_RAM_ATTR void countAnemometer()
   if ((long)(micros() - last_micros_an) >= DEBOUNCE_TIME * 1000)
   {
     anemometerCycles++;
+//    Serial.println("Pulse...");
     last_micros_an = micros();
   }
 }
 
 float calculateWindSpeed()
 {
+//  rtc_wdt_feed();
   float real_speed = (anemometerCycles * (KMPERHOURPERCYCLE * 1000)) / UPDATEINTERVAL;
+  Serial.println("Amount of Cycles: " + String(anemometerCycles));
+  sensorAnemometerPulses.setValue(anemometerCycles);
   anemometerCycles = 0;
 
-  return real_speed; 
+  return real_speed;
 }
 void setup()
 {
+  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
+
   Serial.begin(9600);
   Serial.println("Starting...");
+
+  //reset settings - wipe credentials for testing
+  //wm.resetSettings();
+
+  wm.setConfigPortalBlocking(true);
+
+  //automatically connect using saved credentials if they exist
+  //If connection fails it starts an access point with the specified name
+  if (wm.autoConnect("WeatherStation")) {
+    Serial.println("connected...yeey :)");
+  }
+  else {
+    Serial.println("Configportal running");
+  }
 
   // Unique ID must be set!
   byte mac[6];
@@ -75,14 +98,14 @@ void setup()
   device.setUniqueId(mac, sizeof(mac));
 
   // Connect to wifi
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print(".");
-    delay(500); // waiting for the connection
-  }
-  Serial.println();
-  Serial.println("Connected to the network");
+  //  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  //  while (WiFi.status() != WL_CONNECTED)
+  //  {
+  //    Serial.print(".");
+  //    delay(500); // waiting for the connection
+  //  }
+  //  Serial.println();
+  //  Serial.println("Connected to the network");
 
   // Set sensor and/or device names
   // String conversion for incoming data from Secret.h
@@ -99,7 +122,8 @@ void setup()
   String signalstrengthNameStr = student_id + " Signal Strength";
   String rainNameStr = student_id + " Rain Level";
   String windSensorStr = student_id + " Wind Speed";
-
+  String anemometerPulseNameSTR = student_id + " Anemometer";
+  
   //Convert the strings to const char*
   const char *stationName = stationNameStr.c_str();
   const char *ownerName = ownerNameStr.c_str();
@@ -110,6 +134,7 @@ void setup()
   const char *signalstrengthName = signalstrengthNameStr.c_str();
   const char *rainName = rainNameStr.c_str();
   const char *windName = windSensorStr.c_str();
+  const char *anemometerPulseName = anemometerPulseNameSTR.c_str();
 
   //Set main device name
   device.setName(stationName);
@@ -124,6 +149,9 @@ void setup()
   sensorWindSPD.setName(windName);
   sensorWindSPD.setIcon("mdi:cloud");
   sensorWindSPD.setUnitOfMeasurement("km/h");
+
+  sensorAnemometerPulses.setName(anemometerPulseName);
+  sensorAnemometerPulses.setUnitOfMeasurement("pulses");
 
   sensorOwner.setName(ownerName);
   sensorOwner.setIcon("mdi:account");
@@ -171,14 +199,30 @@ void setup()
 
 void loop()
 {
+  wm.process();
+
   mqtt.loop();
 
   if ((millis() - lastWindSpeedSend) > UPDATEINTERVAL)
   { // read in 30ms interval
 
-    calculateWindSpeed(); // get amount of cycles from 2 seconds
-        
-        //TODO: send data to HA
+    humidityValue = dht.readHumidity();
+    temperatureValue = dht.readTemperature();
+    signalstrengthValue = WiFi.RSSI();
+
+    if (isnan(humidityValue)) {
+      humidityValue = 0;
+    }
+
+    if (isnan(temperatureValue)) {
+      temperatureValue = 0;
+    }
+
+
+
+    windSpeed = calculateWindSpeed(); // get amount of cycles from 2 seconds
+
+    //TODO: send data to HA
     sensorTemperature.setValue(temperatureValue);
     Serial.print("Current temperature is: ");
     Serial.print(temperatureValue);
@@ -204,6 +248,6 @@ void loop()
     Serial.print(windSpeed);
     Serial.println("km/h");
 
-    lastTemperatureSend = millis();
+    lastWindSpeedSend = millis();
   }
 }
