@@ -5,7 +5,24 @@
 #include <ArduinoHA.h>
 #include "DHT.h"
 
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
 WiFiManager wm;
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+// The pins for I2C are defined by the Wire-library.
+// On an arduino UNO:       A4(SDA), A5(SCL)
+// On an arduino MEGA 2560: 20(SDA), 21(SCL)
+// On an arduino LEONARDO:   2(SDA),  3(SCL), ...
+#define OLED_RESET     4 // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 //Define DHT sensor pin and type
 #define DHTPIN 4
@@ -25,7 +42,7 @@ int rainLevel = 0;
 
 // Windspeed variables
 #define DEBOUNCE_TIME 15
-#define ANEMOMETER_PIN 27 // Interrupt pin tied to anemometer reed switch
+#define ANEMOMETER_PIN 12 // Interrupt pin tied to anemometer Hall Effect Sensor 
 
 unsigned long lastWindSpeedSend = millis();
 const float KMPERHOURPERCYCLE = 2.4011;
@@ -56,14 +73,14 @@ ICACHE_RAM_ATTR void countAnemometer()
   if ((long)(micros() - last_micros_an) >= DEBOUNCE_TIME * 1000)
   {
     anemometerCycles++;
-//    Serial.println("Pulse...");
+    //    Serial.println("Pulse...");
     last_micros_an = micros();
   }
 }
 
 float calculateWindSpeed()
 {
-//  rtc_wdt_feed();
+  //  rtc_wdt_feed();
   float real_speed = (anemometerCycles * (KMPERHOURPERCYCLE * 1000)) / UPDATEINTERVAL;
   Serial.println("Amount of Cycles: " + String(anemometerCycles));
   sensorAnemometerPulses.setValue(anemometerCycles);
@@ -71,12 +88,53 @@ float calculateWindSpeed()
 
   return real_speed;
 }
+
+void displaySensorData() {
+  display.clearDisplay();
+  display.setCursor(0, 0);            // Start at top-left corner
+  display.setTextSize(2);             // Normal 1:1 pixel scale
+  display.setTextColor(SSD1306_WHITE);        // Draw white text
+  display.println("S-WEATHER");
+  display.setTextSize(1);             // Normal 1:1 pixel scale
+  display.setTextColor(SSD1306_WHITE);        // Draw white text
+  
+  display.println("\nTemperature: " + String(temperatureValue) + " C");
+  display.println("Humidity: " + String(humidityValue) + " %");
+  display.println("Windspeed: " + String(windSpeed) + " Km/h");
+  display.println("Rain level: " + String(rainLevel) + " mm");
+
+  display.display();
+}
+
 void setup()
 {
   WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
 
   Serial.begin(9600);
   Serial.println("Starting...");
+
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;); // Don't proceed, loop forever
+  }
+
+  display.clearDisplay();
+
+  display.setTextSize(2);             // Normal 1:1 pixel scale
+  display.setTextColor(SSD1306_WHITE);        // Draw white text
+  display.setCursor(0, 0);            // Start at top-left corner
+  display.println(F("S-Weather"));
+  display.println(F("Sascha Vis"));
+  display.println(F("0962873"));
+
+  // Show initial display buffer contents on the screen --
+  // the library initializes this with an Adafruit splash screen.
+  display.display();
+  delay(2000); // Pause for 2 seconds
+
+  // Clear the buffer
+  display.clearDisplay();
 
   //reset settings - wipe credentials for testing
   //wm.resetSettings();
@@ -123,7 +181,7 @@ void setup()
   String rainNameStr = student_id + " Rain Level";
   String windSensorStr = student_id + " Wind Speed";
   String anemometerPulseNameSTR = student_id + " Anemometer";
-  
+
   //Convert the strings to const char*
   const char *stationName = stationNameStr.c_str();
   const char *ownerName = ownerNameStr.c_str();
@@ -181,9 +239,7 @@ void setup()
     Serial.print(".");
     delay(500); // waiting for the connection
   }
-
-  Serial.println();
-  Serial.println("Connected to MQTT broker");
+  Serial.println("\nConnected to S-weather MQTT broker");
 
   //configure the anemometer interrupt
   pinMode(ANEMOMETER_PIN, INPUT_PULLUP);
@@ -218,9 +274,9 @@ void loop()
       temperatureValue = 0;
     }
 
-
-
     windSpeed = calculateWindSpeed(); // get amount of cycles from 2 seconds
+
+    displaySensorData();
 
     //TODO: send data to HA
     sensorTemperature.setValue(temperatureValue);
