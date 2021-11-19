@@ -1,241 +1,352 @@
-/*
-   Author: Sascha Vis
-   Student number: 0962873
-   Date created: 07/09/2021
-   Last modified: 07/09/2021
-   Github: https://github.com/Lenteguppie/WeatherStation-Hardware
-   Board: ESP32
-*/
 #include "secrets.h"
 
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include <b64.h>
+//Include the required libraries
+#include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
+#include <ArduinoHA.h>
 #include "DHT.h"
-#include <ArduinoJson.h>
 
-//Deep sleep Constants
-#define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP  60        /* Time ESP32 will go to sleep (in seconds) */
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
-//DHT11 Constants
-#define DHTPIN 14
+WiFiManager wm;
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+// The pins for I2C are defined by the Wire-library.
+// On an arduino UNO:       A4(SDA), A5(SCL)
+// On an arduino MEGA 2560: 20(SDA), 21(SCL)
+// On an arduino LEONARDO:   2(SDA),  3(SCL), ...
+#define OLED_RESET 4        // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+//Define DHT sensor pin and type
+#define DHTPIN 4
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-// Define some variables we need later
-float humidity;
-float temperature;
+#define UPDATEINTERVAL 10000
 
-float wind_speed;
+//Define variables
+unsigned long lastReadAt = millis();
+unsigned long lastTemperatureSend = millis();
 
-int sensorPin = A0;
-int moisture = 0;
+float temperatureValue, humidityValue, signalstrengthValue;
 
-int moisture_low = 650;
-int moisture_high = 350;
-int moisturePercentage = 0;
+// Rain level variables
+#define RAINPIN 14
+int rainLevel = 0;
+const int AMOUNTOFRAINPERTICK = 8;       //Amount of rain per tick in mm
+volatile unsigned long last_micros_rain; //Timer for debounce
+// #define CLEARRAININTERVAL 3600000 // 1 hour for good measure
+#define CLEARRAININTERVAL 300000 // 5 minutes for sake of the assignment
+unsigned long rainLastCleared = millis();
+volatile bool stateRainChanged = false;
 
-// My own numerical system for registering devices.
-String student_number = STUDENT_NUMBER;
-String mqttName = "HomeStation " + String(student_number);
-String stateTopic = "home_station/weather/" + String(student_number) + "/state";
+// Windspeed variables
+#define DEBOUNCE_TIME 15
+#define ANEMOMETER_PIN 12 // Interrupt pin tied to anemometer Hall Effect Sensor
 
-WiFiClient wifiClient;
-PubSubClient client(wifiClient);
+unsigned long lastWindSpeedSend = millis();
+// const float KMPERHOURPERCYCLE = 2.4011; // for the pre made wind sensor
+const float KMPERHOURPERCYCLE = 1.654246391; // for DIY wind meter
 
-void sendSensorData() {
-  humidity = dht.readHumidity();
-  temperature = dht.readTemperature();
-  moisture = analogRead(sensorPin);
+float windSpeed = 0.0;
+volatile int anemometerCycles;
+volatile unsigned long last_micros_an; //Timer for debounce
 
-  if (isnan(humidity)) {
-    humidity = 0;
-  }
+//Initialize WiFi
+WiFiClient client;
+HADevice device;
+HAMqtt mqtt(client, device);
 
-  if (isnan(temperature)) {
-    temperature = 0;
-  }
+//Define the sensors and/or devices
+//The string must not contain any spaces!!! Otherwise the sensor will not show up in Home Assistant
+HASensor sensorOwner("Owner");
+HASensor sensorLong("Long");
+HASensor sensorLat("Lat");
+HASensor sensorTemperature("Temperature");
+HASensor sensorHumidity("Humidity");
+HASensor sensorRain("RegenMeter");
+HASensor sensorWindSPD("Wind_speed");
+HASensor sensorAnemometerPulses("Anemometer_pulses");
+HASensor sensorSignalstrength("Signal_strength");
 
-  wind_speed = 0;
-
-  // Map moisture sensor values to a percentage value
-  moisturePercentage = map(moisture, moisture_low, moisture_high, 0, 100);
-
-  DynamicJsonDocument doc(1024);
-  char buffer[256];
-  doc["windspeed"] = wind_speed;
-  doc["humidity"] = humidity;
-  doc["temperature"]   = temperature;
-  doc["moisture"] = moisturePercentage;
-
-  size_t n = serializeJson(doc, buffer);
-
-  bool published = client.publish(stateTopic.c_str(), buffer, n);
-
-  // Print the sensor values to Serial out (for debugging)
-  Serial.println("published: ");
-  Serial.println(published);
-  Serial.println("humidity: ");
-  Serial.println(humidity);
-  Serial.println("temperature: ");
-  Serial.println(temperature);
-  Serial.println("moisture %: ");
-  Serial.println(moisturePercentage);
-}
-
-void setup() {
-  Serial.begin(9600);
-  delay(500); //Get some time to start up the serial monitor
-
-  /*
-    First we configure the wake up source
-    We set our ESP32 to wake up every 5 seconds
-  */
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
-                 " Seconds");
-
-  //Start the WiFi connection
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-  Serial.println("Connecting to Wi-Fi");
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  WiFi.setAutoReconnect(true);
-  WiFi.persistent(true);
-
-  Serial.println("Connected to Wi-Fi");
-
-  client.setServer(MQTT_BROKER, MQTT_PORT);
-  Serial.println("Connecting to MQTT");
-  
-  bool resized = client.setBufferSize(512); //resizes the buffer because the discovery payloads can be pretty big
-  Serial.println("resized buffer: " + String(resized));
-
-  while (!client.connected()) {
-    Serial.print(".");
-
-    if (client.connect(mqttName.c_str(), MQTT_USER, MQTT_PASSWORD)) {
-
-      Serial.println("Connected to MQTT");
-
-      sendMQTTTemperatureDiscoveryMsg();
-      delay(500);
-      sendMQTTHumidityDiscoveryMsg();
-      delay(500);
-      sendMQTTMoistureDiscoveryMsg();
-      delay(500);
-      sendMQTTWindSpeedDiscoveryMsg();
-      delay(500);
-
-      //Start the DHT
-      dht.begin();
-
-      Serial.println("===== Sending Data =====");
-      sendSensorData(); //Get the sensorData and send it over to the MQTT broker
-
-    } else {
-
-      Serial.println("failed with state ");
-      Serial.print(client.state());
-      delay(2000);
-
+//Interrupt to increment the anemometer counter
+ICACHE_RAM_ATTR void countAnemometer()
+{
+    if ((long)(micros() - last_micros_an) >= DEBOUNCE_TIME * 1000)
+    {
+        anemometerCycles++;
+        //    Serial.println("Pulse...");
+        last_micros_an = micros();
     }
-  }
-
-  //Go into deep sleep...
-  Serial.println("Going to sleep now");
-  Serial.flush();
-  esp_deep_sleep_start();
-  Serial.println("This will never be printed");
 }
 
-void sendMQTTTemperatureDiscoveryMsg() {
-  Serial.println("Sending Temperature Discovery MSG");
-  String discoveryTopic = "homeassistant/sensor/homestation_sensor_" + String(student_number) + "/temperature/config";
-
-  DynamicJsonDocument doc(1024);
-  char buffer[256];
-
-  doc["name"] = "Homestation" + String(student_number) + " Temperature";
-  doc["stat_t"]   = stateTopic;
-  doc["unit_of_meas"] = "°C";
-  doc["dev_cla"] = "temperature";
-  doc["frc_upd"] = true;
-  doc["val_tpl"] = "{{ value_json.temperature|default(0) }}";
-
-  size_t n = serializeJson(doc, buffer);
-
-  bool sent = client.publish(discoveryTopic.c_str(), buffer, n);
-  Serial.println("Send to topic: " + String(sent));
-
+//Interrupt to increment the amount of rain
+ICACHE_RAM_ATTR void registerRainTick()
+{
+    if ((long)(micros() - last_micros_rain) >= DEBOUNCE_TIME * 1000)
+    {
+        rainLevel += (AMOUNTOFRAINPERTICK / 2); //
+        // sensorRain.setValue(rainLevel);
+        stateRainChanged = true;
+        last_micros_rain = micros();
+    }
 }
 
-void sendMQTTHumidityDiscoveryMsg() {
-  Serial.println("Sending Humidity Discovery MSG");
-  String discoveryTopic = "homeassistant/sensor/homestation_sensor_" + String(student_number) + "/humidity/config";
+float calculateWindSpeed()
+{
+    //  rtc_wdt_feed();
+    float real_speed = (anemometerCycles * KMPERHOURPERCYCLE);
+    Serial.println("Amount of Cycles: " + String(anemometerCycles));
+    sensorAnemometerPulses.setValue(anemometerCycles);
+    anemometerCycles = 0;
 
-  DynamicJsonDocument doc(1024);
-  char buffer[256];
-
-  doc["name"] = "Homestation " + String(student_number) + " Humidity";
-  doc["stat_t"]   = stateTopic;
-  doc["unit_of_meas"] = "%";
-  doc["dev_cla"] = "humidity";
-  doc["frc_upd"] = true;
-  doc["val_tpl"] = "{{ value_json.humidity|default(0) }}";
-
-  size_t n = serializeJson(doc, buffer);
-
-  bool sent = client.publish(discoveryTopic.c_str(), buffer, n);
-  Serial.println("Send to topic: " + String(sent));
+    return real_speed;
 }
 
-void sendMQTTMoistureDiscoveryMsg() {
-  Serial.println("Sending Moisture Discovery MSG");
-  String discoveryTopic = "homeassistant/sensor/homestation_sensor_" + String(student_number) + "/moisture/config"; // The topic the sensor will post the entity configuration to.
+void displaySensorData()
+{
+    display.clearDisplay();
+    display.setCursor(0, 0);             // Start at top-left corner
+    display.setTextSize(2);              // Normal 1:1 pixel scale
+    display.setTextColor(SSD1306_WHITE); // Draw white text
+    display.println("S-WEATHER");
+    display.setTextSize(1);              // Normal 1:1 pixel scale
+    display.setTextColor(SSD1306_WHITE); // Draw white text
 
-  //Initialize the JSON Document
-  DynamicJsonDocument doc(1024);
-  char buffer[256];
+    display.println("\nTemperature: " + String(temperatureValue) + " C");
+    display.println("Humidity: " + String(humidityValue) + " %");
+    display.println("Windspeed: " + String(windSpeed) + " Km/h");
+    display.println("Rain level: " + String(rainLevel) + " mm");
 
-  doc["name"] = "Homestation " + String(student_number) + " Moisture"; //The name of the sensor
-  doc["stat_t"]   = stateTopic; //The topic the sensor will send the updates to
-  doc["frc_upd"] = true; //Force update
-  doc["val_tpl"] = "{{ value_json.moisture|default(0) }}"; //Value template. This will define how HASSIO will parse the data.
-
-  size_t n = serializeJson(doc, buffer); //Convert the JSON document to a String
-  
-  bool sent = client.publish(discoveryTopic.c_str(), buffer, n); //Publish the MQTT message to the discovery topic
-  Serial.println("Send to topic: " + String(sent));
+    display.display();
 }
 
-void sendMQTTWindSpeedDiscoveryMsg() {
-  Serial.println("Sending Wind Speed Discovery MSG");
-  String discoveryTopic = "homeassistant/sensor/homestation_sensor_" + String(student_number) + "/wind_speed/config"; // The topic the sensor will post the entity configuration to.
+void setup()
+{
+    WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
 
-  //Initialize the JSON Document
-  DynamicJsonDocument doc(1024);
-  char buffer[256];
+    Serial.begin(9600);
+    Serial.println("Starting...");
 
-  doc["name"] = "Homestation " + String(student_number) + " Wind Speed"; //The name of the sensor
-  doc["stat_t"]   = stateTopic; //The topic the sensor will send the updates to
-  doc["dev_cla"] = "speed";
-  doc["unit_of_meas"] = "m/s";
-  doc["frc_upd"] = true; //Force update
-  doc["val_tpl"] = "{{ value_json.windspeed|default(0) }}"; //Value template. This will define how HASSIO will parse the data.
+    // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+    if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
+    {
+        Serial.println(F("SSD1306 allocation failed"));
+        for (;;)
+            ; // Don't proceed, loop forever
+    }
 
-  size_t n = serializeJson(doc, buffer); //Convert the JSON document to a String
+    display.clearDisplay();
 
-  bool sent = client.publish(discoveryTopic.c_str(), buffer, n); //Publish the MQTT message to the discovery topic
-  Serial.println("Send to topic: " + String(sent));
+    display.setTextSize(2);              // Normal 1:1 pixel scale
+    display.setTextColor(SSD1306_WHITE); // Draw white text
+    display.setCursor(0, 0);             // Start at top-left corner
+    display.println(F("S-Weather"));
+    display.println(F("Sascha Vis"));
+    display.println(F("0962873"));
+
+    // Show initial display buffer contents on the screen --
+    // the library initializes this with an Adafruit splash screen.
+    display.display();
+    delay(2000); // Pause for 2 seconds
+
+    // Clear the buffer
+    display.clearDisplay();
+
+    //reset settings - wipe credentials for testing
+    //wm.resetSettings();
+
+    wm.setConfigPortalBlocking(true);
+
+    //automatically connect using saved credentials if they exist
+    //If connection fails it starts an access point with the specified name
+    if (wm.autoConnect("WeatherStation"))
+    {
+        Serial.println("connected...yeey :)");
+    }
+    else
+    {
+        Serial.println("Configportal running");
+    }
+
+    // Unique ID must be set!
+    byte mac[6];
+    WiFi.macAddress(mac);
+    device.setUniqueId(mac, sizeof(mac));
+
+    // Connect to wifi
+    //  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    //  while (WiFi.status() != WL_CONNECTED)
+    //  {
+    //    Serial.print(".");
+    //    delay(500); // waiting for the connection
+    //  }
+    //  Serial.println();
+    //  Serial.println("Connected to the network");
+
+    // Set sensor and/or device names
+    // String conversion for incoming data from Secret.h
+    String student_id = STUDENT_ID;
+    String student_name = STUDENT_NAME;
+
+    //Add student ID number with sensor name
+    String stationNameStr = student_name + "'s Home Station";
+    String ownerNameStr = student_id + " Station owner";
+    String longNameStr = student_id + " Long";
+    String latNameStr = student_id + " Lat";
+    String temperatureNameStr = student_id + " Temperature";
+    String humidityNameStr = student_id + " Humidity";
+    String signalstrengthNameStr = student_id + " Signal Strength";
+    String rainNameStr = student_id + " Rain Level";
+    String windSensorStr = student_id + " Wind Speed";
+    String anemometerPulseNameSTR = student_id + " Anemometer";
+
+    //Convert the strings to const char*
+    const char *stationName = stationNameStr.c_str();
+    const char *ownerName = ownerNameStr.c_str();
+    const char *longName = longNameStr.c_str();
+    const char *latName = latNameStr.c_str();
+    const char *temperatureName = temperatureNameStr.c_str();
+    const char *humidityName = humidityNameStr.c_str();
+    const char *signalstrengthName = signalstrengthNameStr.c_str();
+    const char *rainName = rainNameStr.c_str();
+    const char *windName = windSensorStr.c_str();
+    const char *anemometerPulseName = anemometerPulseNameSTR.c_str();
+
+    //Set main device name
+    device.setName(stationName);
+    device.setSoftwareVersion(SOFTWARE_VERSION);
+    device.setManufacturer(STUDENT_NAME);
+    device.setModel(MODEL_TYPE);
+
+    sensorRain.setName(rainName);
+    sensorRain.setIcon("mdi:weather-rainy");
+    sensorRain.setUnitOfMeasurement("mm");
+
+    sensorWindSPD.setName(windName);
+    sensorWindSPD.setIcon("mdi:cloud");
+    sensorWindSPD.setUnitOfMeasurement("km/h");
+
+    sensorAnemometerPulses.setName(anemometerPulseName);
+    sensorAnemometerPulses.setUnitOfMeasurement("pulses");
+
+    sensorOwner.setName(ownerName);
+    sensorOwner.setIcon("mdi:account");
+
+    sensorLong.setName(longName);
+    sensorLong.setIcon("mdi:crosshairs-gps");
+    sensorLat.setName(latName);
+    sensorLat.setIcon("mdi:crosshairs-gps");
+
+    sensorTemperature.setName(temperatureName);
+    sensorTemperature.setDeviceClass("temperature");
+    sensorTemperature.setUnitOfMeasurement("°C");
+
+    sensorHumidity.setName(humidityName);
+    sensorHumidity.setDeviceClass("humidity");
+    sensorHumidity.setUnitOfMeasurement("%");
+
+    sensorSignalstrength.setName(signalstrengthName);
+    sensorSignalstrength.setDeviceClass("signal_strength");
+    sensorSignalstrength.setUnitOfMeasurement("dBm");
+
+    mqtt.begin(BROKER_ADDR, BROKER_USERNAME, BROKER_PASSWORD);
+
+    while (!mqtt.isConnected())
+    {
+        mqtt.loop();
+        Serial.print(".");
+        delay(500); // waiting for the connection
+    }
+    Serial.println("\nConnected to S-weather MQTT broker");
+
+    //configure the anemometer interrupt
+    pinMode(ANEMOMETER_PIN, INPUT_PULLUP);
+    pinMode(RAINPIN, INPUT_PULLUP);
+    
+    // Attach the interrupts
+    attachInterrupt(digitalPinToInterrupt(ANEMOMETER_PIN), countAnemometer, RISING);
+    attachInterrupt(digitalPinToInterrupt(RAINPIN), registerRainTick, RISING);
+
+    sensorOwner.setValue(STUDENT_NAME);
+
+    sensorLat.setValue(LAT, (uint8_t)15U);
+    sensorLong.setValue(LONG, (uint8_t)15U);
+
+    dht.begin();
 }
 
-void loop() {
-  //This is not going to be used
+void loop()
+{
+    wm.process();
+
+    mqtt.loop();
+
+    if ((millis() - rainLastCleared) > CLEARRAININTERVAL){
+        rainLevel = 0; // reset the rain level
+        sensorRain.setValue(rainLevel);
+        Serial.println("Reset the rain level!");
+        rainLastCleared = millis();
+    }
+
+    if ((millis() - lastWindSpeedSend) > UPDATEINTERVAL)
+    { // read in 30ms interval
+
+        humidityValue = dht.readHumidity();
+        temperatureValue = dht.readTemperature();
+        signalstrengthValue = WiFi.RSSI();
+
+        if (isnan(humidityValue))
+        {
+            humidityValue = 0;
+        }
+
+        if (isnan(temperatureValue))
+        {
+            temperatureValue = 0;
+        }
+
+        if (stateRainChanged){
+            sensorRain.setValue(rainLevel);
+            stateRainChanged = false;
+        }
+
+        windSpeed = calculateWindSpeed(); // get amount of cycles from 2 seconds
+
+        displaySensorData();
+
+        //TODO: send data to HA
+        sensorTemperature.setValue(temperatureValue);
+        Serial.print("Current temperature is: ");
+        Serial.print(temperatureValue);
+        Serial.println("°C");
+
+        sensorHumidity.setValue(humidityValue);
+        Serial.print("Current humidity is: ");
+        Serial.print(humidityValue);
+        Serial.println("%");
+
+        sensorSignalstrength.setValue(signalstrengthValue);
+        Serial.print("Current signal strength is: ");
+        Serial.print(signalstrengthValue);
+        Serial.println("%");
+
+        Serial.print("Current rain level is: ");
+        Serial.print(rainLevel);
+        Serial.println("mm");
+
+        sensorWindSPD.setValue(windSpeed);
+        Serial.print("Current wind speed is: ");
+        Serial.print(windSpeed);
+        Serial.println("km/h");
+
+        lastWindSpeedSend = millis();
+    }
 }
